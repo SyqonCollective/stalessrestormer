@@ -26,6 +26,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gan-warmup-weight", type=float, help="Override GAN warmup starting weight")
     parser.add_argument("--r1-gamma", type=float, help="Override R1 regularization gamma")
     parser.add_argument("--d-reg-every", type=int, help="Override discriminator regularization interval")
+    parser.add_argument("--l1-weight", type=float, help="Override L1 loss weight")
+    parser.add_argument("--perceptual-weight", type=float, help="Override perceptual loss weight")
+    parser.add_argument("--residual-weight", type=float, help="Weight for residual consistency loss")
     parser.add_argument("--ema-decay", type=float, help="Override EMA decay for generator")
     parser.add_argument("--no-gan", action="store_true", help="Disable GAN loss entirely")
     parser.add_argument("--no-augment", action="store_true", help="Disable training-time augmentation")
@@ -74,6 +77,12 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         cfg.losses.r1_gamma = args.r1_gamma
     if args.d_reg_every is not None:
         cfg.losses.d_reg_every = args.d_reg_every
+    if args.l1_weight is not None:
+        cfg.losses.l1_weight = args.l1_weight
+    if args.perceptual_weight is not None:
+        cfg.losses.perceptual_weight = args.perceptual_weight
+    if args.residual_weight is not None:
+        cfg.losses.residual_weight = max(0.0, args.residual_weight)
 
     if args.star_mask_alpha is not None:
         cfg.losses.star_mask_alpha = max(0.0, args.star_mask_alpha)

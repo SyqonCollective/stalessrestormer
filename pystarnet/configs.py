@@ -35,6 +35,7 @@ class LossConfig:
     d_reg_every: int = 16
     star_mask_alpha: float = 0.0
     star_mask_threshold: float = 0.2
+    residual_weight: float = 0.0
     feature_layers: List[str] = field(
         default_factory=lambda: [
             "relu1_1",

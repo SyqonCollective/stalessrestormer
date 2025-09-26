@@ -324,12 +324,18 @@ def train(config: ExperimentConfig) -> None:
                 )
                 loss_g = gen_losses["total"]
                 loss_star = torch.tensor(0.0, device=device)
+                loss_residual = torch.tensor(0.0, device=device)
                 if cfg.losses.star_mask_alpha > 0:
                     mask = (torch.abs(inputs.detach() - targets.detach()) > cfg.losses.star_mask_threshold).float()
                     if mask.sum() > 0:
                         star_l1 = (torch.abs(fake - targets) * mask).sum() / (mask.sum() + 1e-6)
                         loss_star = star_l1 * cfg.losses.star_mask_alpha
                         loss_g = loss_g + loss_star
+                if cfg.losses.residual_weight > 0:
+                    residual_pred = inputs - fake
+                    residual_target = inputs - targets
+                    loss_residual = torch.mean(torch.abs(residual_pred - residual_target)) * cfg.losses.residual_weight
+                    loss_g = loss_g + loss_residual
             if use_amp:
                 scaler_g.scale(loss_g).backward()
                 scaler_g.unscale_(optim_g)
@@ -351,6 +357,7 @@ def train(config: ExperimentConfig) -> None:
                     "loss_gan": gen_losses["gan"],
                     "loss_perc": gen_losses["perceptual"],
                     "loss_star": loss_star.detach(),
+                    "loss_residual": loss_residual.detach(),
                 }
             )
 
