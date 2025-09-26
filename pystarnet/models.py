@@ -132,9 +132,9 @@ class StarGenerator(nn.Module):
             skip = skips.pop()
             h = torch.cat([h, skip], dim=1)
             h = decoder(h)
-        output = self.exit(h)
-        # blend learned correction with the original input before squashing to the target range
-        return torch.tanh(output + x)
+        starless = self.exit(h)
+        # predict the full starless image instead of a residual to avoid reintroducing stars from x
+        return torch.tanh(starless)
 
 
 class PatchDiscriminator(nn.Module):
