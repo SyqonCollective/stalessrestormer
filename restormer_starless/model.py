@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from contextlib import nullcontext
 from typing import List, Sequence
 
@@ -12,6 +11,12 @@ from torch import nn
 
 def _has_sdpa() -> bool:
     return hasattr(torch.nn.functional, "scaled_dot_product_attention")
+
+
+try:  # pragma: no cover - optional newer torch API
+    from torch.nn.attention import sdpa_kernel as _sdpa_kernel
+except Exception:  # pragma: no cover - fallback for older versions
+    _sdpa_kernel = None
 
 
 class LayerNorm2d(nn.Module):
@@ -68,18 +73,24 @@ class MultiDConvHeadAttention(nn.Module):
         q = torch.nn.functional.normalize(q, dim=-1)
         k = torch.nn.functional.normalize(k, dim=-1)
 
-        q = q.transpose(-2, -1)
-        k = k.transpose(-2, -1)
-        v = v.transpose(-2, -1)
+        q = q.transpose(-2, -1).contiguous()
+        k = k.transpose(-2, -1).contiguous()
+        v = v.transpose(-2, -1).contiguous()
 
         out = None
 
         if _has_sdpa():
-            sdp_context = (
-                torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=False)
-                if q.device.type == "cuda"
-                else nullcontext()
-            )
+            if q.device.type == "cuda":
+                if _sdpa_kernel is not None:
+                    sdp_context = _sdpa_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=False)
+                else:  # pragma: no cover - fallback for older PyTorch
+                    sdp_context = torch.backends.cuda.sdp_kernel(
+                        enable_flash=True,
+                        enable_mem_efficient=True,
+                        enable_math=False,
+                    )
+            else:
+                sdp_context = nullcontext()
             try:
                 with sdp_context:
                     out = torch.nn.functional.scaled_dot_product_attention(
@@ -103,21 +114,35 @@ class MultiDConvHeadAttention(nn.Module):
     def _chunked_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         b, heads, tokens, dim = q.shape
         bytes_per_elem = q.element_size()
-        max_bytes = 512 * 1024 * 1024  # 512MB budget for the attention matrix
+        base_bytes = 64 * 1024 * 1024  # target ~64MB per chunk matmul
         denom = max(b * heads * tokens * bytes_per_elem, 1)
-        chunk = max(1, min(tokens, max_bytes // denom))
-        chunk = max(chunk, 16)
+        approx = base_bytes // denom if denom else tokens
+        chunk = max(1, approx)
+        chunk = min(chunk, tokens)
+        chunk = max(4, chunk)
+        chunk = min(chunk, tokens)
 
-        out = torch.empty_like(q)
         scale = dim ** -0.5
         k_t = k.transpose(-2, -1)
-        for start in range(0, tokens, chunk):
-            end = min(start + chunk, tokens)
-            q_chunk = q[:, :, start:end, :]
-            attn_scores = torch.matmul(q_chunk, k_t) * scale
-            attn_scores = torch.softmax(attn_scores, dim=-1)
-            out[:, :, start:end, :] = torch.matmul(attn_scores, v)
-        return out
+
+        while chunk >= 1:
+            try:
+                out = torch.empty_like(q)
+                for start in range(0, tokens, chunk):
+                    end = min(start + chunk, tokens)
+                    q_chunk = q[:, :, start:end, :]
+                    attn_scores = torch.matmul(q_chunk, k_t) * scale
+                    attn_scores = torch.softmax(attn_scores, dim=-1)
+                    out[:, :, start:end, :] = torch.matmul(attn_scores, v)
+                return out
+            except torch.OutOfMemoryError:
+                if chunk == 1:
+                    raise
+                chunk = max(1, chunk // 2)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        raise RuntimeError("Failed to compute chunked attention without exhausting memory")
 
 
 class TransformerBlock(nn.Module):
