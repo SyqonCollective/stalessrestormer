@@ -117,11 +117,11 @@ class StarGenerator(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = self.entry(x)
         skips: List[torch.Tensor] = []
-        for encoder, downsample in zip(self.encoders, self.downsamples):
+        for idx, (encoder, downsample) in enumerate(zip(self.encoders, self.downsamples)):
             h = encoder(h)
-            skips.append(h)
-            if not isinstance(downsample, nn.Identity):
-                h = downsample(h)
+            if idx < len(self.encoders) - 1:
+                skips.append(h)
+            h = downsample(h)
         h = self.bottleneck(h)
         for upsample, decoder in zip(self.upsamples, self.decoders):
             h = upsample(h)
