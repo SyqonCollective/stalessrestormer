@@ -83,9 +83,13 @@ class MultiDConvHeadAttention(nn.Module):
             if q.device.type == "cuda":
                 if _sdpa_kernel is not None:
                     try:
-                        sdp_context = _sdpa_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=False)
+                        sdp_context = _sdpa_kernel(
+                            enable_flash=True,
+                            enable_mem_efficient=True,
+                            enable_math=False,
+                        )
                     except TypeError:  # pragma: no cover - older signature
-                        sdp_context = _sdpa_kernel(enable_flash=True, enable_math=True)
+                        sdp_context = nullcontext()
                 else:  # pragma: no cover - fallback for older PyTorch
                     sdp_context = torch.backends.cuda.sdp_kernel(
                         enable_flash=True,
