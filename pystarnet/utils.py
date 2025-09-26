@@ -35,6 +35,7 @@ def save_checkpoint(
     optim_d: torch.optim.Optimizer,
     scaler_g: Optional[torch.cuda.amp.GradScaler],
     scaler_d: Optional[torch.cuda.amp.GradScaler],
+    generator_ema: Optional[torch.nn.Module] = None,
 ) -> None:
     ensure_dir(path.parent)
     torch.save(
@@ -47,6 +48,7 @@ def save_checkpoint(
             "optim_d": optim_d.state_dict(),
             "scaler_g": scaler_g.state_dict() if scaler_g else None,
             "scaler_d": scaler_d.state_dict() if scaler_d else None,
+            "generator_ema": generator_ema.state_dict() if generator_ema else None,
         },
         path,
     )

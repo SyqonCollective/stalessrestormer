@@ -17,7 +17,9 @@ from pystarnet.models import build_models
 def load_generator(checkpoint: Path, device: torch.device) -> torch.nn.Module:
     generator, _ = build_models()
     state = torch.load(checkpoint, map_location=device)
-    if "generator" in state:
+    if "generator_ema" in state and state["generator_ema"]:
+        generator.load_state_dict(state["generator_ema"], strict=False)
+    elif "generator" in state:
         generator.load_state_dict(state["generator"])
     else:
         generator.load_state_dict(state)

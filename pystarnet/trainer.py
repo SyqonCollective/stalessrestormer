@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 from contextlib import nullcontext
 from itertools import islice
@@ -47,10 +48,12 @@ def _build_val_dataloader(dataset_cfg: DatasetConfig, trainer_cfg) -> Optional[t
 
 
 def _psnr(pred: torch.Tensor, target: torch.Tensor) -> float:
-    mse = torch.mean((pred - target) ** 2).item()
-    if mse == 0:
+    pred_01 = ((pred.clamp(-1.0, 1.0) + 1.0) / 2.0)
+    target_01 = ((target.clamp(-1.0, 1.0) + 1.0) / 2.0)
+    mse = torch.mean((pred_01 - target_01) ** 2).item()
+    if mse <= 0:
         return float("inf")
-    return 10 * math.log10(4.0 / mse)
+    return 10 * math.log10(1.0 / mse)
 
 
 def _resolve_device(preferred: str) -> torch.device:
@@ -78,6 +81,44 @@ def _should_use_amp(device: torch.device, requested: bool) -> bool:
     return True
 
 
+def _gan_weight_for_epoch(loss_cfg, epoch: int) -> float:
+    warmup = max(loss_cfg.gan_warmup_epochs, 0)
+    if warmup > 0 and epoch <= warmup:
+        alpha = epoch / warmup
+        return loss_cfg.gan_warmup_weight + alpha * (loss_cfg.gan_weight - loss_cfg.gan_warmup_weight)
+    return loss_cfg.gan_weight
+
+
+def _accumulate(target: torch.nn.Module, source: torch.nn.Module, decay: float) -> None:
+    with torch.no_grad():
+        for ema_param, param in zip(target.parameters(), source.parameters()):
+            ema_param.mul_(decay).add_(param, alpha=1 - decay)
+        for ema_buffer, buffer in zip(target.buffers(), source.buffers()):
+            ema_buffer.copy_(buffer)
+
+
+def _requires_grad(model: torch.nn.Module, flag: bool = True) -> None:
+    for p in model.parameters():
+        p.requires_grad_(flag)
+
+
+def _r1_regularization(discriminator, inputs, targets) -> torch.Tensor:
+    inputs.requires_grad_(True)
+    targets.requires_grad_(True)
+    logits = discriminator(inputs, targets)
+    grad_outputs = torch.ones_like(logits)
+    (grad_targets,) = torch.autograd.grad(
+        outputs=logits,
+        inputs=targets,
+        grad_outputs=grad_outputs,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )
+    penalty = grad_targets.pow(2).view(grad_targets.size(0), -1).sum(dim=1).mean()
+    return penalty
+
+
 def train(config: ExperimentConfig) -> None:
     project_root = Path(__file__).resolve().parent
     cfg = config.resolve(project_root)
@@ -93,6 +134,8 @@ def train(config: ExperimentConfig) -> None:
     )
     generator.to(device)
     discriminator.to(device)
+    generator_ema = copy.deepcopy(generator).to(device)
+    generator_ema.eval()
 
     hinge = HingeGANLoss()
     perceptual = PerceptualLoss(cfg.losses.feature_layers).to(device)
@@ -105,7 +148,7 @@ def train(config: ExperimentConfig) -> None:
     )
     optim_d = Adam(
         discriminator.parameters(),
-        lr=cfg.optimizer.lr_discriminator,
+        lr=cfg.optimizer.lr_discriminator * 0.5,
         betas=(cfg.optimizer.beta1, cfg.optimizer.beta2),
         weight_decay=cfg.optimizer.weight_decay,
     )
@@ -127,6 +170,15 @@ def train(config: ExperimentConfig) -> None:
 
     global_step = 0
     best_val_l1 = math.inf
+
+    if val_loader is not None:
+        train_names = set(Path(p).name for p in getattr(train_loader.dataset, "inputs", []))
+        val_names = set(Path(p).name for p in getattr(val_loader.dataset, "inputs", []))
+        if train_names and val_names and train_names == val_names:
+            print(
+                "[PyStarNet] Warning: validation set appears identical to training set. "
+                "Consider using separate tiles for meaningful metrics."
+            )
 
     for epoch in range(1, cfg.trainer.max_epochs + 1):
         generator.train()
@@ -151,39 +203,67 @@ def train(config: ExperimentConfig) -> None:
             inputs = batch["input"].to(device, non_blocking=True)
             targets = batch["target"].to(device, non_blocking=True)
 
-            # Discriminator step
-            optim_d.zero_grad(set_to_none=True)
-            autocast_cm = amp.autocast(device_type=device.type) if use_amp else nullcontext()
-            with autocast_cm:
-                fake = generator(inputs)
-                fake = torch.nan_to_num(fake, nan=0.0, posinf=1.0, neginf=-1.0)
-                logits_real = discriminator(inputs, targets)
-                logits_fake = discriminator(inputs, fake.detach())
-                logits_real = torch.clamp(logits_real, -100.0, 100.0)
-                logits_fake = torch.clamp(logits_fake, -100.0, 100.0)
-                loss_d = discriminator_loss(logits_real, logits_fake, hinge)
-            if not torch.isfinite(loss_d):
-                raise FloatingPointError(
-                    f"Discriminator loss became non-finite at step {global_step}" )
-            if use_amp:
-                scaler_d.scale(loss_d).backward()
-                scaler_d.unscale_(optim_d)
-                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), cfg.trainer.gradient_clip)
-                scaler_d.step(optim_d)
-                scaler_d.update()
-            else:
-                loss_d.backward()
-                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), cfg.trainer.gradient_clip)
-                optim_d.step()
+            current_gan_weight = _gan_weight_for_epoch(cfg.losses, epoch)
+            enable_gan = current_gan_weight > 0
 
-            # Generator step
+            if enable_gan:
+                optim_d.zero_grad(set_to_none=True)
+                _requires_grad(discriminator, True)
+                _requires_grad(generator, False)
+                autocast_cm = amp.autocast(device_type=device.type) if use_amp else nullcontext()
+                with autocast_cm:
+                    fake = generator(inputs)
+                    fake = torch.nan_to_num(fake, nan=0.0, posinf=1.0, neginf=-1.0)
+                    logits_real = discriminator(inputs, targets)
+                    logits_fake = discriminator(inputs, fake.detach())
+                    logits_real = torch.clamp(logits_real, -10.0, 10.0)
+                    logits_fake = torch.clamp(logits_fake, -10.0, 10.0)
+                    loss_d = discriminator_loss(logits_real, logits_fake, hinge)
+                if use_amp:
+                    scaler_d.scale(loss_d).backward()
+                    scaler_d.unscale_(optim_d)
+                    torch.nn.utils.clip_grad_norm_(discriminator.parameters(), cfg.trainer.gradient_clip)
+                    scaler_d.step(optim_d)
+                    scaler_d.update()
+                else:
+                    loss_d.backward()
+                    torch.nn.utils.clip_grad_norm_(discriminator.parameters(), cfg.trainer.gradient_clip)
+                    optim_d.step()
+
+                if cfg.losses.d_reg_every > 0 and global_step % cfg.losses.d_reg_every == 0:
+                    optim_d.zero_grad(set_to_none=True)
+                    _requires_grad(generator, False)
+                    autocast_cm = amp.autocast(device_type=device.type) if use_amp else nullcontext()
+                    inputs.requires_grad_(True)
+                    targets.requires_grad_(True)
+                    with autocast_cm:
+                        reg = _r1_regularization(discriminator, inputs, targets)
+                    reg_loss = (cfg.losses.r1_gamma * 0.5) * reg
+                    if use_amp:
+                        scaler_d.scale(reg_loss).backward()
+                        scaler_d.unscale_(optim_d)
+                        scaler_d.step(optim_d)
+                        scaler_d.update()
+                    else:
+                        reg_loss.backward()
+                        optim_d.step()
+                    inputs = inputs.detach()
+                    targets = targets.detach()
+                _requires_grad(discriminator, False)
+            else:
+                loss_d = torch.tensor(0.0, device=device)
+
+            _requires_grad(generator, True)
             optim_g.zero_grad(set_to_none=True)
             autocast_cm = amp.autocast(device_type=device.type) if use_amp else nullcontext()
             with autocast_cm:
                 fake = generator(inputs)
                 fake = torch.nan_to_num(fake, nan=0.0, posinf=1.0, neginf=-1.0)
-                logits_fake = discriminator(inputs, fake)
-                logits_fake = torch.clamp(logits_fake, -100.0, 100.0)
+                if enable_gan:
+                    logits_fake = discriminator(inputs, fake)
+                    logits_fake = torch.clamp(logits_fake, -10.0, 10.0)
+                else:
+                    logits_fake = torch.zeros(inputs.size(0), 1, device=device)
                 gen_losses = generator_loss(
                     logits_fake,
                     fake,
@@ -191,7 +271,7 @@ def train(config: ExperimentConfig) -> None:
                     hinge,
                     perceptual,
                     cfg.losses.l1_weight,
-                    cfg.losses.gan_weight,
+                    current_gan_weight,
                     cfg.losses.perceptual_weight,
                 )
                 loss_g = gen_losses["total"]
@@ -205,6 +285,8 @@ def train(config: ExperimentConfig) -> None:
                 loss_g.backward()
                 torch.nn.utils.clip_grad_norm_(generator.parameters(), cfg.trainer.gradient_clip)
                 optim_g.step()
+
+            _accumulate(generator_ema, generator, cfg.trainer.ema_decay)
 
             epoch_metrics.update(
                 {
@@ -247,6 +329,7 @@ def train(config: ExperimentConfig) -> None:
                 optim_d,
                 scaler_g if use_amp else None,
                 scaler_d if use_amp else None,
+                generator_ema,
             )
             print(
                 f"[PyStarNet] Saved checkpoint_epoch_{epoch:04d}.pt in {cfg.output_dir}" )
@@ -255,7 +338,7 @@ def train(config: ExperimentConfig) -> None:
             val_metrics = validate(
                 epoch,
                 cfg,
-                generator,
+                generator_ema,
                 val_loader,
                 device,
             )
@@ -270,8 +353,9 @@ def train(config: ExperimentConfig) -> None:
                     optim_g,
                     optim_d,
                     scaler_g if use_amp else None,
-                scaler_d if use_amp else None,
-            )
+                    scaler_d if use_amp else None,
+                    generator_ema,
+                )
                 print(
                     "[PyStarNet] New best checkpoint (val L1 {:.4f}) saved to {}".format(
                         best_val_l1,
@@ -280,7 +364,7 @@ def train(config: ExperimentConfig) -> None:
                 )
 
         if val_loader and epoch % cfg.trainer.preview_interval == 0:
-            save_validation_preview(cfg, generator, val_loader, device, epoch)
+            save_validation_preview(cfg, generator_ema, val_loader, device, epoch)
 
 
 def validate(

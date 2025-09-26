@@ -7,8 +7,9 @@ Implementazione PyTorch di StarNet++ con architettura UNet residua, self-attenti
 - Encoder-decoder con blocchi residuali e self-attention sul bottleneck
 - PatchGAN con spectral norm e loss hinge per stabilità
 - Loss percettiva basata su VGG19 pre-addestrata
+- Warmup supervisionato (solo L1+percettiva) nelle prime epoche, poi GAN a peso pieno con R1 regularization
 - Mixed precision con fallback automatico se l'architettura CUDA non è supportata
-- Gradient clipping su generator/discriminatore, monitor NaN automatico e checkpoint "best" basato sulla L1 di validazione
+- Gradient clipping su generator/discriminatore, EMA del generatore, monitor NaN automatico e checkpoint "best" basato sulla L1 di validazione
 - Data pipeline per tile `input/` – `target/` (PNG/TIFF/JPEG) con le stesse augmentation di StarNet (rotazioni arbitrarie, resize, flip, channel shuffle, ecc.)
 
 ## Dipendenze
@@ -34,6 +35,8 @@ python train_pytorch.py \
 I checkpoint per ogni epoca (`checkpoint_epoch_0020.pt`), il best model (`checkpoint_best.pt`), i log JSONL e le preview `.png` vengono salvati in `pystarnet_logs/`.
 
 > **Nota su CUDA 12.0 (RTX 5090)**: se la build ufficiale di PyTorch non include ancora l'architettura `sm_120`, il training disattiverà automaticamente la mixed precision per evitare instabilità. Per sfruttare la GPU in fp16 conviene installare la nightly `cu124` da `https://download.pytorch.org/whl/nightly/cu124`.
+
+Le prime epoche vengono dedicate al warmup supervisionato (solo L1 + percettiva) finché `gan_warmup_epochs` non è concluso; il peso avversario viene poi portato al valore definitivo (`gan_weight`) con R1 regularization (`r1_gamma`, `d_reg_every`) per mantenere il discriminatore stabile. Durante il training viene mantenuta anche una EMA del generatore utilizzata per validazione, preview e checkpoint.
 
 ## Inference
 

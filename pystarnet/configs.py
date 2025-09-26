@@ -27,8 +27,12 @@ class OptimizerConfig:
 @dataclass
 class LossConfig:
     l1_weight: float = 10.0
-    gan_weight: float = 1.0
+    gan_weight: float = 0.5
+    gan_warmup_weight: float = 0.0
+    gan_warmup_epochs: int = 5
     perceptual_weight: float = 0.1
+    r1_gamma: float = 10.0
+    d_reg_every: int = 16
     feature_layers: List[str] = field(
         default_factory=lambda: [
             "relu1_1",
@@ -53,6 +57,7 @@ class TrainerConfig:
     log_interval: int = 50
     seed: int = 42
     device: str = "cuda"
+    ema_decay: float = 0.999
 
 
 @dataclass
