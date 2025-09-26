@@ -54,3 +54,13 @@ python inference_pytorch.py \
 ```
 
 Il modello lavora in floating point su range [-1, 1] e converte automaticamente in/out da immagini RGB.
+
+## GUI
+
+Per un'interfaccia grafica interattiva (selezione checkpoint, immagine e avanzamento), avvia:
+
+```
+python pystarnet_gui/inference_gui.py
+```
+
+Puoi scegliere tile size (default 512) e overlap; il risultato viene salvato accanto all'immagine originale con suffisso `_starless`.

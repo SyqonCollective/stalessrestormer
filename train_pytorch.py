@@ -31,6 +31,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-augment", action="store_true", help="Disable training-time augmentation")
     parser.add_argument("--supervised-epochs", type=int, help="Number of initial epochs with pure supervised training (no GAN)")
     parser.add_argument("--augment-start-epoch", type=int, help="Epoch from which to enable data augmentation")
+    parser.add_argument("--resume-from", type=Path, help="Checkpoint to resume or fine-tune from")
+    parser.add_argument("--resume-load-optim", action="store_true", help="Load optimizer/scaler states when resuming")
+    parser.add_argument("--star-mask-alpha", type=float, help="Weight for star-focused L1 penalty")
+    parser.add_argument("--star-mask-threshold", type=float, help="Threshold on |input-target| to define star mask (0-2 range)")
     return parser.parse_args()
 
 
@@ -71,8 +75,17 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
     if args.d_reg_every is not None:
         cfg.losses.d_reg_every = args.d_reg_every
 
+    if args.star_mask_alpha is not None:
+        cfg.losses.star_mask_alpha = max(0.0, args.star_mask_alpha)
+    if args.star_mask_threshold is not None:
+        cfg.losses.star_mask_threshold = max(0.0, args.star_mask_threshold)
+
     if args.no_augment:
         cfg.dataset.augment = False
+
+    if args.resume_from is not None:
+        cfg.resume_from = args.resume_from
+        cfg.resume_load_optim = args.resume_load_optim
     return cfg
 
 

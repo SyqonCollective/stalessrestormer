@@ -33,6 +33,8 @@ class LossConfig:
     perceptual_weight: float = 0.1
     r1_gamma: float = 10.0
     d_reg_every: int = 16
+    star_mask_alpha: float = 0.0
+    star_mask_threshold: float = 0.2
     feature_layers: List[str] = field(
         default_factory=lambda: [
             "relu1_1",
@@ -95,4 +97,6 @@ class ExperimentConfig:
         resolved.trainer = self.trainer
         resolved.model = self.model
         resolved.output_dir = (project_root / self.output_dir).resolve()
+        resolved.resume_from = getattr(self, "resume_from", None)
+        resolved.resume_load_optim = getattr(self, "resume_load_optim", False)
         return resolved

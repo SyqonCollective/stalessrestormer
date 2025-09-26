@@ -137,7 +137,25 @@ def train(config: ExperimentConfig) -> None:
     )
     generator.to(device)
     discriminator.to(device)
+
+    resume_state = None
+    resume_path = getattr(cfg, "resume_from", None)
+    resume_load_optim = getattr(cfg, "resume_load_optim", False)
+    start_epoch = 1
+    global_step = 0
+
+    if resume_path:
+        resume_state = torch.load(resume_path, map_location=device)
+        generator.load_state_dict(resume_state["generator"])
+        if "discriminator" in resume_state:
+            discriminator.load_state_dict(resume_state["discriminator"])
+        start_epoch = resume_state.get("epoch", 0) + 1
+        global_step = resume_state.get("step", 0)
+        print(f"[PyStarNet] Resumed weights from {resume_path} (epoch {start_epoch - 1})")
+
     generator_ema = copy.deepcopy(generator).to(device)
+    if resume_state and resume_state.get("generator_ema"):
+        generator_ema.load_state_dict(resume_state["generator_ema"])
     generator_ema.eval()
 
     hinge = HingeGANLoss()
@@ -168,11 +186,24 @@ def train(config: ExperimentConfig) -> None:
         scaler_g = amp.GradScaler(enabled=False)
         scaler_d = amp.GradScaler(enabled=False)
 
+    if resume_state and resume_load_optim:
+        if "optim_g" in resume_state:
+            optim_g.load_state_dict(resume_state["optim_g"])
+            for group in optim_g.param_groups:
+                group["lr"] = cfg.optimizer.lr_generator
+        if "optim_d" in resume_state:
+            optim_d.load_state_dict(resume_state["optim_d"])
+            for group in optim_d.param_groups:
+                group["lr"] = cfg.optimizer.lr_discriminator
+        if use_amp and resume_state.get("scaler_g"):
+            scaler_g.load_state_dict(resume_state["scaler_g"])
+        if use_amp and resume_state.get("scaler_d"):
+            scaler_d.load_state_dict(resume_state["scaler_d"])
+
     train_loader = build_dataloader(cfg.dataset, cfg.trainer, role="train")
     val_loader = _build_val_dataloader(cfg.dataset, cfg.trainer)
     base_augment = getattr(train_loader.dataset, "augment", False)
 
-    global_step = 0
     best_val_l1 = math.inf
 
     if val_loader is not None:
@@ -184,7 +215,7 @@ def train(config: ExperimentConfig) -> None:
                 "Consider using separate tiles for meaningful metrics."
             )
 
-    for epoch in range(1, cfg.trainer.max_epochs + 1):
+    for epoch in range(start_epoch, cfg.trainer.max_epochs + 1):
         generator.train()
         discriminator.train()
         epoch_metrics = MetricAverager()
@@ -292,6 +323,13 @@ def train(config: ExperimentConfig) -> None:
                     cfg.losses.perceptual_weight,
                 )
                 loss_g = gen_losses["total"]
+                loss_star = torch.tensor(0.0, device=device)
+                if cfg.losses.star_mask_alpha > 0:
+                    mask = (torch.abs(inputs.detach() - targets.detach()) > cfg.losses.star_mask_threshold).float()
+                    if mask.sum() > 0:
+                        star_l1 = (torch.abs(fake - targets) * mask).sum() / (mask.sum() + 1e-6)
+                        loss_star = star_l1 * cfg.losses.star_mask_alpha
+                        loss_g = loss_g + loss_star
             if use_amp:
                 scaler_g.scale(loss_g).backward()
                 scaler_g.unscale_(optim_g)
@@ -312,6 +350,7 @@ def train(config: ExperimentConfig) -> None:
                     "loss_l1": gen_losses["l1"],
                     "loss_gan": gen_losses["gan"],
                     "loss_perc": gen_losses["perceptual"],
+                    "loss_star": loss_star.detach(),
                 }
             )
 
