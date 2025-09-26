@@ -226,7 +226,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--mixed-precision", action="store_true")
     parser.add_argument("--perceptual-weight", type=float, default=0.1)
-    parser.add_argument("--save-interval", type=int, default=10)
+    parser.add_argument("--save-interval", type=int, default=2)
     parser.add_argument("--no-augment", action="store_true")
     parser.add_argument("--train-input-dir", type=Path, help="Explicit directory for training input tiles")
     parser.add_argument("--train-target-dir", type=Path, help="Explicit directory for training target tiles")
@@ -415,7 +415,7 @@ def main() -> None:
     global_step = 0
 
     for epoch in range(1, args.epochs + 1):
-        progress = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}", leave=False)
+        progress = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}", leave=True)
         epoch_loss = 0.0
         for batch in progress:
             inputs = batch["input"].to(device)
@@ -453,6 +453,10 @@ def main() -> None:
             if val_loss < best_val:
                 best_val = val_loss
                 ckpt_path = args.output_dir / f"checkpoint_best_epoch_{epoch:04d}_l1_{val_loss:.4f}.pt"
+                print(
+                    f"[Restormer] New best checkpoint saved: {ckpt_path.name} (val L1={val_loss:.4f})",
+                    flush=True,
+                )
                 torch.save({
                     "epoch": epoch,
                     "step": global_step,
@@ -462,6 +466,10 @@ def main() -> None:
                 torch.save(model.state_dict(), args.output_dir / "checkpoint_best.pt")
         if args.save_interval and epoch % args.save_interval == 0:
             ckpt_path = args.output_dir / f"checkpoint_epoch_{epoch:04d}.pt"
+            print(
+                f"[Restormer] Periodic checkpoint saved: {ckpt_path.name} (epoch {epoch})",
+                flush=True,
+            )
             torch.save({
                 "epoch": epoch,
                 "step": global_step,
