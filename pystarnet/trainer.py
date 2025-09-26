@@ -226,6 +226,15 @@ def train(config: ExperimentConfig) -> None:
             cfg.output_dir / "train_metrics.jsonl",
             {"epoch": epoch, **averages},
         )
+        print(
+            "[PyStarNet] Epoch {:03d} train | L1: {:.4f} GAN: {:.4f} Perc: {:.4f} D: {:.4f}".format(
+                epoch,
+                averages.get("loss_l1", 0.0),
+                averages.get("loss_gan", 0.0),
+                averages.get("loss_perc", 0.0),
+                averages.get("loss_d", 0.0),
+            )
+        )
 
         if epoch % cfg.trainer.checkpoint_interval == 0:
             save_checkpoint(
@@ -239,6 +248,8 @@ def train(config: ExperimentConfig) -> None:
                 scaler_g if use_amp else None,
                 scaler_d if use_amp else None,
             )
+            print(
+                f"[PyStarNet] Saved checkpoint_epoch_{epoch:04d}.pt in {cfg.output_dir}" )
 
         if val_loader and epoch % cfg.trainer.validation_interval == 0:
             val_metrics = validate(
@@ -259,7 +270,13 @@ def train(config: ExperimentConfig) -> None:
                     optim_g,
                     optim_d,
                     scaler_g if use_amp else None,
-                    scaler_d if use_amp else None,
+                scaler_d if use_amp else None,
+            )
+                print(
+                    "[PyStarNet] New best checkpoint (val L1 {:.4f}) saved to {}".format(
+                        best_val_l1,
+                        cfg.output_dir / "checkpoint_best.pt",
+                    )
                 )
 
         if val_loader and epoch % cfg.trainer.preview_interval == 0:
@@ -285,6 +302,13 @@ def validate(
             metric.update({"l1": l1, "psnr": psnr})
     averages = metric.compute()
     save_metrics(cfg.output_dir / "val_metrics.jsonl", {"epoch": epoch, **averages})
+    print(
+        "[PyStarNet] Epoch {:03d} val   | L1: {:.4f} PSNR: {:.2f}".format(
+            epoch,
+            averages.get("l1", 0.0),
+            averages.get("psnr", 0.0),
+        )
+    )
     return averages
 
 
