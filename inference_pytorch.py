@@ -40,6 +40,16 @@ def save_image(tensor: torch.Tensor, path: Path) -> None:
     image.save(path)
 
 
+def postprocess_prediction(
+    prediction: torch.Tensor,
+    original: torch.Tensor,
+    mode: str,
+) -> torch.Tensor:
+    if mode == "residual":
+        return torch.clamp(original - prediction, -1.0, 1.0)
+    return prediction
+
+
 def sliding_window_inference(
     generator: torch.nn.Module,
     image: torch.Tensor,
@@ -83,6 +93,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tile-size", type=int, default=256, help="Sliding window size")
     parser.add_argument("--stride", type=int, default=128, help="Sliding window stride")
     parser.add_argument("--device", default="cuda", help="Device to run inference on")
+    parser.add_argument(
+        "--output-mode",
+        choices=("direct", "residual"),
+        default="direct",
+        help="Interpret generator output as direct starless image or residual to subtract",
+    )
     return parser.parse_args()
 
 
@@ -92,6 +108,7 @@ def main() -> None:
     generator = load_generator(args.checkpoint, device)
     image = prepare_image(args.input)
     output = sliding_window_inference(generator, image, args.tile_size, args.stride, device)
+    output = postprocess_prediction(output, image, args.output_mode)
     save_image(output, args.output)
 
 

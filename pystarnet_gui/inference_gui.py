@@ -12,6 +12,7 @@ import torch
 
 from inference_pytorch import (
     load_generator,
+    postprocess_prediction,
     prepare_image,
     save_image,
     sliding_window_inference,
@@ -25,6 +26,7 @@ class InferenceWorker(threading.Thread):
         image_path: Path,
         tile_size: int,
         overlap: int,
+        output_mode: str,
         queue: Queue,
     ) -> None:
         super().__init__(daemon=True)
@@ -32,6 +34,7 @@ class InferenceWorker(threading.Thread):
         self.image_path = image_path
         self.tile_size = tile_size
         self.overlap = overlap
+        self.output_mode = output_mode
         self.queue = queue
 
     def run(self) -> None:
@@ -70,6 +73,7 @@ class InferenceWorker(threading.Thread):
                 device,
                 progress_cb,
             )
+            output = postprocess_prediction(output, image, self.output_mode)
 
             target_path = self.image_path.with_name(f"{self.image_path.stem}_starless{self.image_path.suffix}")
             save_image(output, target_path)
@@ -88,6 +92,7 @@ class InferenceGUI:
         self.image_var = StringVar()
         self.tile_var = IntVar(value=512)
         self.overlap_var = IntVar(value=64)
+        self.mode_var = StringVar(value="direct")
         self.status_var = StringVar(value="Pronto")
         self.progress_var = DoubleVar(value=0.0)
 
@@ -116,13 +121,23 @@ class InferenceGUI:
         ttk.Label(self.root, text="Overlap:").grid(row=3, column=0, sticky=E, **padding)
         ttk.Spinbox(self.root, from_=0, to=2047, textvariable=self.overlap_var, increment=16).grid(row=3, column=1, sticky=W, **padding)
 
+        ttk.Label(self.root, text="Output mode:").grid(row=4, column=0, sticky=E, **padding)
+        mode_box = ttk.Combobox(
+            self.root,
+            textvariable=self.mode_var,
+            values=("direct", "residual"),
+            state="readonly",
+        )
+        mode_box.grid(row=4, column=1, sticky=W, **padding)
+        mode_box.current(0)
+
         self.start_button = ttk.Button(self.root, text="Avvia", command=self._start_inference)
-        self.start_button.grid(row=4, column=0, columnspan=3, sticky=W + E, padx=8, pady=12)
+        self.start_button.grid(row=5, column=0, columnspan=3, sticky=W + E, padx=8, pady=12)
 
         self.progress = ttk.Progressbar(self.root, variable=self.progress_var, maximum=1.0)
-        self.progress.grid(row=5, column=0, columnspan=3, sticky=W + E, padx=8, pady=4)
+        self.progress.grid(row=6, column=0, columnspan=3, sticky=W + E, padx=8, pady=4)
 
-        ttk.Label(self.root, textvariable=self.status_var).grid(row=6, column=0, columnspan=3, sticky=W, padx=8, pady=4)
+        ttk.Label(self.root, textvariable=self.status_var).grid(row=7, column=0, columnspan=3, sticky=W, padx=8, pady=4)
 
     def _browse_checkpoint(self) -> None:
         path = filedialog.askopenfilename(
@@ -149,6 +164,7 @@ class InferenceGUI:
         image_path = Path(self.image_var.get())
         tile_size = self.tile_var.get()
         overlap = self.overlap_var.get()
+        output_mode = self.mode_var.get()
 
         if not checkpoint.exists():
             messagebox.showerror("Errore", f"Checkpoint non trovato:\n{checkpoint}")
@@ -170,7 +186,14 @@ class InferenceGUI:
         self.status_var.set("Preparazione...")
         self.start_button.config(state="disabled")
 
-        self.worker = InferenceWorker(checkpoint, image_path, tile_size, overlap, self.queue)
+        self.worker = InferenceWorker(
+            checkpoint,
+            image_path,
+            tile_size,
+            overlap,
+            output_mode,
+            self.queue,
+        )
         self.worker.start()
         self.root.after(100, self._poll_queue)
 
