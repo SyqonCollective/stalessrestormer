@@ -65,11 +65,11 @@ class ModelConfig:
 @dataclass
 class ExperimentConfig:
     output_dir: Path = Path("./pystarnet_logs")
-    dataset: DatasetConfig = DatasetConfig()
-    optimizer: OptimizerConfig = OptimizerConfig()
-    losses: LossConfig = LossConfig()
-    trainer: TrainerConfig = TrainerConfig()
-    model: ModelConfig = ModelConfig()
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    losses: LossConfig = field(default_factory=LossConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
 
     def resolve(self, project_root: Path) -> "ExperimentConfig":
         resolved = ExperimentConfig()
