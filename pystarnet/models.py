@@ -103,9 +103,13 @@ class StarGenerator(nn.Module):
         skip_channels = list(reversed(encoder_channels[:-1]))
         for skip in skip_channels:
             self.upsamples.append(Upsample(channels, skip))
-            channels = skip * 2
-            blocks = [ResidualBlock(channels) for _ in range(num_res_blocks)]
-            self.decoders.append(nn.Sequential(*blocks))
+            decoder_layers: List[nn.Module] = [
+                nn.Conv2d(skip * 2, skip, 3, padding=1),
+                nn.GroupNorm(8, skip),
+                nn.SiLU(inplace=True),
+            ]
+            decoder_layers.extend(ResidualBlock(skip) for _ in range(num_res_blocks))
+            self.decoders.append(nn.Sequential(*decoder_layers))
             channels = skip
 
         self.exit = nn.Sequential(
@@ -123,7 +127,7 @@ class StarGenerator(nn.Module):
                 skips.append(h)
             h = downsample(h)
         h = self.bottleneck(h)
-        for upsample, decoder in zip(self.upsamples, self.decoders):
+        for idx, (upsample, decoder) in enumerate(zip(self.upsamples, self.decoders)):
             h = upsample(h)
             skip = skips.pop()
             h = torch.cat([h, skip], dim=1)
