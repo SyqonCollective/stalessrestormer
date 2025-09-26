@@ -1,0 +1,84 @@
+# Directories dati - non includere nel repo
+train_tiles/
+val_tiles/
+
+# Checkpoints e logs - generati durante training
+checkpoints/
+logs/
+*.pth
+*.pt
+
+# Immagini di output
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.tif
+*_starless.*
+*_comparison.*
+samples/
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# TensorBoard
+events.out.tfevents.*
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# CUDA cache
+.nv/
