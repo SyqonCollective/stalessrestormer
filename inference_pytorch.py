@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Tuple
+from typing import Callable, Optional, Tuple
 
 import torch
 from PIL import Image
@@ -46,6 +46,7 @@ def sliding_window_inference(
     tile_size: int,
     stride: int,
     device: torch.device,
+    progress_cb: Optional[Callable[[float], None]] = None,
 ) -> torch.Tensor:
     _, _, h, w = image.shape
     pad_h = (tile_size - h % stride) % stride
@@ -56,6 +57,9 @@ def sliding_window_inference(
     output = torch.zeros_like(image)
     weight = torch.zeros_like(image)
 
+    total_tiles = ((padded_h - tile_size) // stride + 1) * ((padded_w - tile_size) // stride + 1)
+    processed = 0
+
     for top in range(0, padded_h - tile_size + 1, stride):
         for left in range(0, padded_w - tile_size + 1, stride):
             patch = image[:, :, top : top + tile_size, left : left + tile_size].to(device)
@@ -63,6 +67,9 @@ def sliding_window_inference(
                 pred = generator(patch)
             output[:, :, top : top + tile_size, left : left + tile_size] += pred.detach().cpu()
             weight[:, :, top : top + tile_size, left : left + tile_size] += 1
+            processed += 1
+            if progress_cb is not None:
+                progress_cb(processed / total_tiles)
 
     output = output / weight.clamp_min(1)
     return output[:, :, :h, :w]
