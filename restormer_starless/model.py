@@ -149,8 +149,10 @@ class Restormer(nn.Module):
         heads: Sequence[int] = (1, 2, 4, 8),
         ffn_expansion: float = 2.66,
         bias: bool = True,
+        alpha: float = 1.0,
     ) -> None:
         super().__init__()
+        dim = int(dim * alpha)
         self.patch_embed = OverlapPatchEmbed(inp_channels, dim)
 
         dims: List[int] = [dim, dim * 2, dim * 4, dim * 8]

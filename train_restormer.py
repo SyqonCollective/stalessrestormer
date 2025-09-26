@@ -71,6 +71,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--base-dim", type=int, default=48, help="Base channel dimension")
+    parser.add_argument(
+        "--dim-scale",
+        type=float,
+        default=1.0,
+        help="Scaling factor applied to base channels (alpha)",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--mixed-precision", action="store_true")
     parser.add_argument("--perceptual-weight", type=float, default=0.1)
@@ -146,7 +153,7 @@ def main() -> None:
         augment=not args.no_augment,
     )
 
-    model = Restormer().to(device)
+    model = Restormer(dim=args.base_dim, alpha=args.dim_scale).to(device)
     criterion_l1 = nn.L1Loss()
     perceptual = None
     if args.perceptual_weight > 0:
