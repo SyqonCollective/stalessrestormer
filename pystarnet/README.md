@@ -7,8 +7,9 @@ Implementazione PyTorch di StarNet++ con architettura UNet residua, self-attenti
 - Encoder-decoder con blocchi residuali e self-attention sul bottleneck
 - PatchGAN con spectral norm e loss hinge per stabilità
 - Loss percettiva basata su VGG19 pre-addestrata
-- Mixed precision, gradient clipping, checkpointing e preview automatici
-- Data pipeline per tile `input/` – `target/` (PNG/TIFF/JPEG) con augmentation
+- Mixed precision con fallback automatico se l'architettura CUDA non è supportata
+- Gradient clipping, checkpointing per epoch e salvataggio "best" basato sulla L1 di validazione
+- Data pipeline per tile `input/` – `target/` (PNG/TIFF/JPEG) con le stesse augmentation di StarNet (rotazioni arbitrarie, resize, flip, channel shuffle, ecc.)
 
 ## Dipendenze
 
@@ -30,7 +31,9 @@ python train_pytorch.py \
     --mixed-precision
 ```
 
-I checkpoint (es. `checkpoint_epoch_0020.pt`), i log JSONL e le preview `.png` vengono salvati in `pystarnet_logs/`.
+I checkpoint per ogni epoca (`checkpoint_epoch_0020.pt`), il best model (`checkpoint_best.pt`), i log JSONL e le preview `.png` vengono salvati in `pystarnet_logs/`.
+
+> **Nota su CUDA 12.0 (RTX 5090)**: se la build ufficiale di PyTorch non include ancora l'architettura `sm_120`, il training disattiverà automaticamente la mixed precision per evitare instabilità. Per sfruttare la GPU in fp16 conviene installare la nightly `cu124` da `https://download.pytorch.org/whl/nightly/cu124`.
 
 ## Inference
 

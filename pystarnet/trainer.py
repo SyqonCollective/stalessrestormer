@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Optional
 
 import torch
-from torch.cuda.amp import GradScaler, autocast
+from torch import amp
 from torch.optim import Adam
 from tqdm import tqdm
 
 from .configs import DatasetConfig, ExperimentConfig
-from .data import TileDataset, build_dataloader
+from .data import build_dataloader
 from .losses import (
     HingeGANLoss,
     PerceptualLoss,
@@ -52,13 +52,38 @@ def _psnr(pred: torch.Tensor, target: torch.Tensor) -> float:
     return 10 * math.log10(4.0 / mse)
 
 
+def _resolve_device(preferred: str) -> torch.device:
+    if preferred == "cuda" and not torch.cuda.is_available():
+        print("[PyStarNet] CUDA requested but unavailable; falling back to CPU.")
+        return torch.device("cpu")
+    return torch.device(preferred)
+
+
+def _should_use_amp(device: torch.device, requested: bool) -> bool:
+    if not requested:
+        return False
+    if device.type != "cuda":
+        return False
+    dev_index = device.index if device.index is not None else torch.cuda.current_device()
+    major, minor = torch.cuda.get_device_capability(dev_index)
+    arch = f"sm_{major}{minor}"
+    supported_arches = torch.cuda.get_arch_list()
+    if arch not in supported_arches:
+        print(
+            f"[PyStarNet] CUDA arch {arch} not in PyTorch build ({supported_arches}). "
+            "Disabling mixed precision to prevent instability."
+        )
+        return False
+    return True
+
+
 def train(config: ExperimentConfig) -> None:
     project_root = Path(__file__).resolve().parent
     cfg = config.resolve(project_root)
     ensure_dir(cfg.output_dir)
     set_seed(cfg.trainer.seed)
 
-    device = torch.device(cfg.trainer.device if torch.cuda.is_available() else "cpu")
+    device = _resolve_device(cfg.trainer.device)
 
     generator, discriminator = build_models(
         base_channels=cfg.model.base_channels,
@@ -84,14 +109,15 @@ def train(config: ExperimentConfig) -> None:
         weight_decay=cfg.optimizer.weight_decay,
     )
 
-    use_amp = cfg.trainer.mixed_precision and device.type == "cuda"
-    scaler_g = GradScaler(enabled=use_amp)
-    scaler_d = GradScaler(enabled=use_amp)
+    use_amp = _should_use_amp(device, cfg.trainer.mixed_precision)
+    scaler_g = amp.GradScaler(device_type=device.type, enabled=use_amp)
+    scaler_d = amp.GradScaler(device_type=device.type, enabled=use_amp)
 
     train_loader = build_dataloader(cfg.dataset, cfg.trainer, role="train")
     val_loader = _build_val_dataloader(cfg.dataset, cfg.trainer)
 
     global_step = 0
+    best_val_l1 = math.inf
 
     for epoch in range(1, cfg.trainer.max_epochs + 1):
         generator.train()
@@ -118,11 +144,14 @@ def train(config: ExperimentConfig) -> None:
 
             # Discriminator step
             optim_d.zero_grad(set_to_none=True)
-            with autocast(enabled=use_amp):
+            with amp.autocast(device_type=device.type, enabled=use_amp):
                 fake = generator(inputs)
                 logits_real = discriminator(inputs, targets)
                 logits_fake = discriminator(inputs, fake.detach())
                 loss_d = discriminator_loss(logits_real, logits_fake, hinge)
+            if not torch.isfinite(loss_d):
+                raise FloatingPointError(
+                    f"Discriminator loss became non-finite at step {global_step}" )
             if use_amp:
                 scaler_d.scale(loss_d).backward()
                 scaler_d.step(optim_d)
@@ -133,7 +162,7 @@ def train(config: ExperimentConfig) -> None:
 
             # Generator step
             optim_g.zero_grad(set_to_none=True)
-            with autocast(enabled=use_amp):
+            with amp.autocast(device_type=device.type, enabled=use_amp):
                 fake = generator(inputs)
                 logits_fake = discriminator(inputs, fake)
                 gen_losses = generator_loss(
@@ -193,13 +222,26 @@ def train(config: ExperimentConfig) -> None:
             )
 
         if val_loader and epoch % cfg.trainer.validation_interval == 0:
-            validate(
+            val_metrics = validate(
                 epoch,
                 cfg,
                 generator,
                 val_loader,
                 device,
             )
+            if "l1" in val_metrics and val_metrics["l1"] < best_val_l1:
+                best_val_l1 = val_metrics["l1"]
+                save_checkpoint(
+                    cfg.output_dir / "checkpoint_best.pt",
+                    epoch,
+                    global_step,
+                    generator,
+                    discriminator,
+                    optim_g,
+                    optim_d,
+                    scaler_g if use_amp else None,
+                    scaler_d if use_amp else None,
+                )
 
         if val_loader and epoch % cfg.trainer.preview_interval == 0:
             save_validation_preview(cfg, generator, val_loader, device, epoch)
@@ -211,7 +253,7 @@ def validate(
     generator: torch.nn.Module,
     dataloader,
     device: torch.device,
-) -> None:
+) -> dict:
     generator.eval()
     metric = MetricAverager()
     with torch.no_grad():
@@ -224,6 +266,7 @@ def validate(
             metric.update({"l1": l1, "psnr": psnr})
     averages = metric.compute()
     save_metrics(cfg.output_dir / "val_metrics.jsonl", {"epoch": epoch, **averages})
+    return averages
 
 
 def save_validation_preview(
