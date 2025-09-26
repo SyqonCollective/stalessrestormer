@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import argparse
 import math
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import torch
 from torch import nn
@@ -26,6 +27,125 @@ from restormer_starless import (
     ensure_dir,
     save_metrics,
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _base_variants(path: Path) -> list[Path]:
+    variants = [path]
+    if not path.is_absolute():
+        variants.append(Path.cwd() / path)
+        variants.append(PROJECT_ROOT / path)
+    return variants
+
+
+def _resolve_dir(
+    path: Optional[Path],
+    *,
+    expected_subdir: Optional[str] = None,
+    default_names: Sequence[str] = (),
+    fallback_roots: Sequence[Optional[Path]] = (),
+) -> tuple[Optional[Path], Optional[Path]]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def add_candidate(candidate: Path) -> None:
+        key = candidate.resolve(strict=False)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(candidate)
+
+    def add_from_base(base: Path, include_base: bool) -> None:
+        for variant in _base_variants(base):
+            if include_base:
+                add_candidate(variant)
+            if expected_subdir is not None:
+                add_candidate(variant / expected_subdir)
+
+    original = Path(path) if path is not None else None
+
+    if original is not None:
+        add_from_base(original, include_base=True)
+        if expected_subdir is not None:
+            suffix = f"_{expected_subdir}"
+            if original.name.endswith(suffix):
+                base_name = original.name[: -len(suffix)]
+                if base_name:
+                    add_from_base(original.with_name(base_name), include_base=False)
+    else:
+        include_defaults = expected_subdir is None
+        for name in default_names:
+            add_from_base(Path(name), include_base=include_defaults)
+
+    include_fallbacks = expected_subdir is None
+    for root in fallback_roots:
+        if root is None:
+            continue
+        add_from_base(Path(root), include_base=include_fallbacks)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate, original
+
+    return None, original
+
+
+def _create_grad_scaler(device_type: str, enabled: bool):
+    grad_scaler_ctor = getattr(getattr(torch, "amp", None), "GradScaler", None)
+    if grad_scaler_ctor is not None:
+        try:
+            return grad_scaler_ctor(device_type=device_type, enabled=enabled)
+        except TypeError:
+            return grad_scaler_ctor(enabled=enabled)
+    cuda_amp = getattr(torch, "cuda", None)
+    if cuda_amp is not None:
+        cuda_grad_scaler = getattr(getattr(cuda_amp, "amp", None), "GradScaler", None)
+        if cuda_grad_scaler is not None:
+            return cuda_grad_scaler(enabled=enabled and device_type == "cuda")
+
+    class _DisabledGradScaler:
+        def is_enabled(self) -> bool:
+            return False
+
+        def scale(self, loss):
+            return loss
+
+        def step(self, optimizer):
+            optimizer.step()
+
+        def update(self) -> None:
+            pass
+
+    return _DisabledGradScaler()
+
+
+def _autocast(device_type: str, enabled: bool):
+    if not enabled:
+        return nullcontext()
+
+    amp_autocast = getattr(getattr(torch, "amp", None), "autocast", None)
+    if amp_autocast is not None:
+        try:
+            return amp_autocast(device_type=device_type, enabled=enabled)
+        except TypeError:
+            return amp_autocast(enabled=enabled)
+
+    cuda_amp = getattr(torch, "cuda", None)
+    if device_type == "cuda" and cuda_amp is not None:
+        cuda_autocast = getattr(getattr(cuda_amp, "amp", None), "autocast", None)
+        if cuda_autocast is not None:
+            return cuda_autocast(enabled=enabled)
+
+    generic_autocast = getattr(torch, "autocast", None)
+    if generic_autocast is not None:
+        try:
+            return generic_autocast(device_type, enabled=enabled)
+        except TypeError:
+            return generic_autocast(device_type)
+
+    return nullcontext()
 
 
 def _build_dataloaders(
@@ -177,24 +297,91 @@ def main() -> None:
         raise ValueError("Provide both --train-input-dir and --train-target-dir when specifying explicit training directories")
     if (args.val_input_dir is None) != (args.val_target_dir is None):
         raise ValueError("Provide both --val-input-dir and --val-target-dir when specifying explicit validation directories")
-    if args.train_dir is None and (args.train_input_dir is None or args.train_target_dir is None):
-        raise ValueError("Provide --train-dir or both --train-input-dir/--train-target-dir")
 
-    for name, path in (
-        ("train", args.train_dir),
-        ("validation", args.val_dir),
-    ):
-        if path is not None and not path.exists():
-            raise ValueError(f"Specified {name} directory does not exist: {path}")
+    resolved_train_dir, original_train_dir = _resolve_dir(
+        args.train_dir,
+        default_names=("train_tiles",),
+    )
+    resolved_val_dir, original_val_dir = _resolve_dir(
+        args.val_dir,
+        default_names=("val_tiles",),
+    )
 
-    for name, path in (
-        ("train input", args.train_input_dir),
-        ("train target", args.train_target_dir),
-        ("validation input", args.val_input_dir),
-        ("validation target", args.val_target_dir),
-    ):
-        if path is not None and not path.exists():
-            raise ValueError(f"Specified {name} directory does not exist: {path}")
+    train_input_dir, original_train_input = _resolve_dir(
+        args.train_input_dir,
+        expected_subdir="input",
+        default_names=("train_tiles",),
+        fallback_roots=(resolved_train_dir, PROJECT_ROOT / "train_tiles"),
+    )
+    train_target_dir, original_train_target = _resolve_dir(
+        args.train_target_dir,
+        expected_subdir="target",
+        default_names=("train_tiles",),
+        fallback_roots=(resolved_train_dir, PROJECT_ROOT / "train_tiles"),
+    )
+
+    if resolved_train_dir is None and train_input_dir is not None:
+        resolved_train_dir = train_input_dir.parent
+    if resolved_train_dir is None and train_target_dir is not None:
+        resolved_train_dir = train_target_dir.parent
+
+    val_input_dir, original_val_input = _resolve_dir(
+        args.val_input_dir,
+        expected_subdir="input",
+        default_names=("val_tiles",),
+        fallback_roots=(resolved_val_dir, PROJECT_ROOT / "val_tiles"),
+    )
+    val_target_dir, original_val_target = _resolve_dir(
+        args.val_target_dir,
+        expected_subdir="target",
+        default_names=("val_tiles",),
+        fallback_roots=(resolved_val_dir, PROJECT_ROOT / "val_tiles"),
+    )
+
+    if resolved_val_dir is None and val_input_dir is not None:
+        resolved_val_dir = val_input_dir.parent
+    if resolved_val_dir is None and val_target_dir is not None:
+        resolved_val_dir = val_target_dir.parent
+
+    if resolved_train_dir is None and (train_input_dir is None or train_target_dir is None):
+        hint = original_train_dir or Path("train_tiles")
+        raise ValueError(
+            f"Training data directory not found. Provide --train-dir or explicit --train-input-dir/--train-target-dir (checked around {hint})."
+        )
+
+    if train_input_dir is None or not train_input_dir.exists():
+        hint = original_train_input or (
+            (resolved_train_dir / "input") if resolved_train_dir is not None else Path("train_tiles/input")
+        )
+        raise ValueError(f"Could not locate train input tiles directory near {hint}")
+
+    if train_target_dir is None or not train_target_dir.exists():
+        hint = original_train_target or (
+            (resolved_train_dir / "target") if resolved_train_dir is not None else Path("train_tiles/target")
+        )
+        raise ValueError(f"Could not locate train target tiles directory near {hint}")
+
+    if args.val_dir is not None and resolved_val_dir is None:
+        raise ValueError(f"Specified validation directory does not exist: {args.val_dir}")
+
+    if val_input_dir is not None and not val_input_dir.exists():
+        hint = original_val_input or (
+            (resolved_val_dir / "input") if resolved_val_dir is not None else Path("val_tiles/input")
+        )
+        raise ValueError(f"Could not locate validation input tiles directory near {hint}")
+
+    if val_target_dir is not None and not val_target_dir.exists():
+        hint = original_val_target or (
+            (resolved_val_dir / "target") if resolved_val_dir is not None else Path("val_tiles/target")
+        )
+        raise ValueError(f"Could not locate validation target tiles directory near {hint}")
+
+    args.train_dir = resolved_train_dir
+    args.val_dir = resolved_val_dir
+    args.train_input_dir = train_input_dir
+    args.train_target_dir = train_target_dir
+    args.val_input_dir = val_input_dir
+    args.val_target_dir = val_target_dir
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     amp_device_type = "cuda" if device.type == "cuda" else "cpu"
     amp_enabled = args.mixed_precision and device.type == "cuda"
@@ -222,7 +409,7 @@ def main() -> None:
 
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    scaler = torch.amp.GradScaler(device_type=amp_device_type, enabled=amp_enabled)
+    scaler = _create_grad_scaler(amp_device_type, amp_enabled)
 
     best_val = math.inf
     global_step = 0
@@ -234,7 +421,7 @@ def main() -> None:
             inputs = batch["input"].to(device)
             targets = batch["target"].to(device)
             optimizer.zero_grad(set_to_none=True)
-            with torch.amp.autocast(device_type=amp_device_type, enabled=scaler.is_enabled()):
+            with _autocast(amp_device_type, scaler.is_enabled()):
                 preds = model(inputs)
                 loss = criterion_l1(preds, targets)
                 if perceptual is not None:
