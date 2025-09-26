@@ -110,8 +110,16 @@ def train(config: ExperimentConfig) -> None:
     )
 
     use_amp = _should_use_amp(device, cfg.trainer.mixed_precision)
-    scaler_g = amp.GradScaler(device_type=device.type, enabled=use_amp)
-    scaler_d = amp.GradScaler(device_type=device.type, enabled=use_amp)
+    if use_amp:
+        try:
+            scaler_g = amp.GradScaler(device_type=device.type)
+            scaler_d = amp.GradScaler(device_type=device.type)
+        except TypeError:  # older torch: no device_type argument
+            scaler_g = amp.GradScaler()
+            scaler_d = amp.GradScaler()
+    else:
+        scaler_g = amp.GradScaler(enabled=False)
+        scaler_d = amp.GradScaler(enabled=False)
 
     train_loader = build_dataloader(cfg.dataset, cfg.trainer, role="train")
     val_loader = _build_val_dataloader(cfg.dataset, cfg.trainer)
@@ -144,7 +152,8 @@ def train(config: ExperimentConfig) -> None:
 
             # Discriminator step
             optim_d.zero_grad(set_to_none=True)
-            with amp.autocast(device_type=device.type, enabled=use_amp):
+            autocast_cm = amp.autocast(device_type=device.type) if use_amp else torch.autocast(device.type, enabled=False)
+            with autocast_cm:
                 fake = generator(inputs)
                 logits_real = discriminator(inputs, targets)
                 logits_fake = discriminator(inputs, fake.detach())
@@ -162,7 +171,8 @@ def train(config: ExperimentConfig) -> None:
 
             # Generator step
             optim_g.zero_grad(set_to_none=True)
-            with amp.autocast(device_type=device.type, enabled=use_amp):
+            autocast_cm = amp.autocast(device_type=device.type) if use_amp else torch.autocast(device.type, enabled=False)
+            with autocast_cm:
                 fake = generator(inputs)
                 logits_fake = discriminator(inputs, fake)
                 gen_losses = generator_loss(
