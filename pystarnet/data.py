@@ -48,13 +48,38 @@ class TileDataset(Dataset):
 
         input_dir = self.root / "input"
         target_dir = self.root / "target"
-        self.inputs = _list_images(input_dir, self.valid_extensions)
-        self.targets = _list_images(target_dir, self.valid_extensions)
+        input_files = _list_images(input_dir, self.valid_extensions)
+        target_files = _list_images(target_dir, self.valid_extensions)
 
-        if len(self.inputs) == 0:
+        if not input_files:
             raise ValueError(f"No tiles found in {input_dir}")
-        if self.inputs != self.targets:
-            raise ValueError("Input and target tile names do not match")
+        if not target_files:
+            raise ValueError(f"No tiles found in {target_dir}")
+
+        input_map = {p.name: p for p in input_files}
+        target_map = {p.name: p for p in target_files}
+        shared = sorted(set(input_map).intersection(target_map))
+
+        missing_input = sorted(set(target_map).difference(input_map))
+        missing_target = sorted(set(input_map).difference(target_map))
+
+        if missing_input or missing_target:
+            message = ["Tile mismatch detected; using intersection of names."]
+            if missing_input:
+                message.append(f"Missing in input/: {', '.join(missing_input[:5])}")
+                if len(missing_input) > 5:
+                    message.append(f"...and {len(missing_input) - 5} more")
+            if missing_target:
+                message.append(f"Missing in target/: {', '.join(missing_target[:5])}")
+                if len(missing_target) > 5:
+                    message.append(f"...and {len(missing_target) - 5} more")
+            print("[PyStarNet] " + " ".join(message))
+
+        if not shared:
+            raise ValueError("No overlapping tile names between input/ and target/")
+
+        self.inputs = [input_map[name] for name in shared]
+        self.targets = [target_map[name] for name in shared]
 
     def __len__(self) -> int:
         return len(self.inputs)
