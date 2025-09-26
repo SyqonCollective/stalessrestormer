@@ -132,8 +132,9 @@ class StarGenerator(nn.Module):
             skip = skips.pop()
             h = torch.cat([h, skip], dim=1)
             h = decoder(h)
-        residual = torch.tanh(self.exit(h))
-        return torch.clamp(x - residual, -1.0, 1.0)
+        output = self.exit(h)
+        # blend learned correction with the original input before squashing to the target range
+        return torch.tanh(output + x)
 
 
 class PatchDiscriminator(nn.Module):
