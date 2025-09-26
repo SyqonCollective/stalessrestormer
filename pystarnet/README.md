@@ -29,7 +29,11 @@ python train_pytorch.py \
     --output-dir ./pystarnet_logs \
     --epochs 200 \
     --batch-size 8 \
-    --mixed-precision
+    --mixed-precision \
+    --gan-warmup-epochs 5 \
+    --gan-weight 0.2 \
+    --r1-gamma 10 \
+    --d-reg-every 16
 ```
 
 I checkpoint per ogni epoca (`checkpoint_epoch_0020.pt`), il best model (`checkpoint_best.pt`), i log JSONL e le preview `.png` vengono salvati in `pystarnet_logs/`.

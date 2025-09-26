@@ -29,6 +29,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ema-decay", type=float, help="Override EMA decay for generator")
     parser.add_argument("--no-gan", action="store_true", help="Disable GAN loss entirely")
     parser.add_argument("--no-augment", action="store_true", help="Disable training-time augmentation")
+    parser.add_argument("--supervised-epochs", type=int, help="Number of initial epochs with pure supervised training (no GAN)")
+    parser.add_argument("--augment-start-epoch", type=int, help="Epoch from which to enable data augmentation")
     return parser.parse_args()
 
 
@@ -46,6 +48,10 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
     cfg.trainer.device = args.device
     if args.ema_decay is not None:
         cfg.trainer.ema_decay = args.ema_decay
+    if args.supervised_epochs is not None:
+        cfg.trainer.supervised_epochs = max(0, args.supervised_epochs)
+    if args.augment_start_epoch is not None:
+        cfg.trainer.augment_start_epoch = max(0, args.augment_start_epoch)
 
     cfg.optimizer.lr_generator = args.lr
     cfg.optimizer.lr_discriminator = args.lr

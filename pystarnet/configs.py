@@ -58,6 +58,8 @@ class TrainerConfig:
     seed: int = 42
     device: str = "cuda"
     ema_decay: float = 0.999
+    supervised_epochs: int = 3
+    augment_start_epoch: int = 4
 
 
 @dataclass

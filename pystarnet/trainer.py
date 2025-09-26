@@ -127,6 +127,9 @@ def train(config: ExperimentConfig) -> None:
 
     device = _resolve_device(cfg.trainer.device)
 
+    if cfg.trainer.augment_start_epoch <= cfg.trainer.supervised_epochs:
+        cfg.trainer.augment_start_epoch = cfg.trainer.supervised_epochs + 1
+
     generator, discriminator = build_models(
         base_channels=cfg.model.base_channels,
         num_res_blocks=cfg.model.num_res_blocks,
@@ -167,6 +170,7 @@ def train(config: ExperimentConfig) -> None:
 
     train_loader = build_dataloader(cfg.dataset, cfg.trainer, role="train")
     val_loader = _build_val_dataloader(cfg.dataset, cfg.trainer)
+    base_augment = getattr(train_loader.dataset, "augment", False)
 
     global_step = 0
     best_val_l1 = math.inf
@@ -185,6 +189,22 @@ def train(config: ExperimentConfig) -> None:
         discriminator.train()
         epoch_metrics = MetricAverager()
 
+        supervised_phase = epoch <= cfg.trainer.supervised_epochs or cfg.losses.gan_weight == 0
+        if hasattr(train_loader.dataset, "augment"):
+            train_loader.dataset.augment = base_augment and (epoch >= cfg.trainer.augment_start_epoch) and not supervised_phase
+        if supervised_phase:
+            current_gan_weight = 0.0
+        else:
+            current_gan_weight = _gan_weight_for_epoch(cfg.losses, epoch)
+        enable_gan = current_gan_weight > 0
+        augment_flag = getattr(train_loader.dataset, "augment", False)
+        if supervised_phase:
+            print(f"[PyStarNet] Epoch {epoch:03d}: Supervised warmup (GAN off, augmentation {augment_flag})")
+        elif augment_flag:
+            print(f"[PyStarNet] Epoch {epoch:03d}: GAN weight {current_gan_weight:.3f}, augmentation ON")
+        else:
+            print(f"[PyStarNet] Epoch {epoch:03d}: GAN weight {current_gan_weight:.3f}, augmentation OFF")
+
         data_iter = train_loader
         if cfg.trainer.steps_per_epoch:
             data_iter = islice(train_loader, cfg.trainer.steps_per_epoch)
@@ -202,9 +222,6 @@ def train(config: ExperimentConfig) -> None:
         for batch_index, batch in enumerate(progress, start=1):
             inputs = batch["input"].to(device, non_blocking=True)
             targets = batch["target"].to(device, non_blocking=True)
-
-            current_gan_weight = _gan_weight_for_epoch(cfg.losses, epoch)
-            enable_gan = current_gan_weight > 0
 
             if enable_gan:
                 optim_d.zero_grad(set_to_none=True)
