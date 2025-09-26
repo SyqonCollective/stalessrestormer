@@ -37,6 +37,8 @@ class TileDataset(Dataset):
         augment: bool = True,
         random_crop: bool = True,
         valid_extensions: Sequence[str] = (".png", ".jpg", ".jpeg", ".tif", ".tiff"),
+        input_dir: Optional[Path] = None,
+        target_dir: Optional[Path] = None,
     ) -> None:
         self.root = Path(root)
         self.image_size = image_size
@@ -44,8 +46,8 @@ class TileDataset(Dataset):
         self.random_crop = random_crop
         self.valid_extensions = valid_extensions
 
-        input_dir = self.root / "input"
-        target_dir = self.root / "target"
+        input_dir = Path(input_dir) if input_dir is not None else self.root / "input"
+        target_dir = Path(target_dir) if target_dir is not None else self.root / "target"
 
         inputs = _list_images(input_dir, valid_extensions)
         targets = _list_images(target_dir, valid_extensions)
@@ -116,12 +118,16 @@ def build_dataloader(
     augment: bool,
     random_crop: bool,
     shuffle: bool,
+    input_dir: Optional[Path] = None,
+    target_dir: Optional[Path] = None,
 ) -> DataLoader:
     dataset = TileDataset(
         root=root,
         image_size=image_size,
         augment=augment,
         random_crop=random_crop,
+        input_dir=input_dir,
+        target_dir=target_dir,
     )
     return DataLoader(
         dataset,
