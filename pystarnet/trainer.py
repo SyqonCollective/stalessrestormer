@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
 from itertools import islice
 from pathlib import Path
 from typing import Optional
@@ -152,29 +153,37 @@ def train(config: ExperimentConfig) -> None:
 
             # Discriminator step
             optim_d.zero_grad(set_to_none=True)
-            autocast_cm = amp.autocast(device_type=device.type) if use_amp else torch.autocast(device.type, enabled=False)
+            autocast_cm = amp.autocast(device_type=device.type) if use_amp else nullcontext()
             with autocast_cm:
                 fake = generator(inputs)
+                fake = torch.nan_to_num(fake, nan=0.0, posinf=1.0, neginf=-1.0)
                 logits_real = discriminator(inputs, targets)
                 logits_fake = discriminator(inputs, fake.detach())
+                logits_real = torch.clamp(logits_real, -100.0, 100.0)
+                logits_fake = torch.clamp(logits_fake, -100.0, 100.0)
                 loss_d = discriminator_loss(logits_real, logits_fake, hinge)
             if not torch.isfinite(loss_d):
                 raise FloatingPointError(
                     f"Discriminator loss became non-finite at step {global_step}" )
             if use_amp:
                 scaler_d.scale(loss_d).backward()
+                scaler_d.unscale_(optim_d)
+                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), cfg.trainer.gradient_clip)
                 scaler_d.step(optim_d)
                 scaler_d.update()
             else:
                 loss_d.backward()
+                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), cfg.trainer.gradient_clip)
                 optim_d.step()
 
             # Generator step
             optim_g.zero_grad(set_to_none=True)
-            autocast_cm = amp.autocast(device_type=device.type) if use_amp else torch.autocast(device.type, enabled=False)
+            autocast_cm = amp.autocast(device_type=device.type) if use_amp else nullcontext()
             with autocast_cm:
                 fake = generator(inputs)
+                fake = torch.nan_to_num(fake, nan=0.0, posinf=1.0, neginf=-1.0)
                 logits_fake = discriminator(inputs, fake)
+                logits_fake = torch.clamp(logits_fake, -100.0, 100.0)
                 gen_losses = generator_loss(
                     logits_fake,
                     fake,

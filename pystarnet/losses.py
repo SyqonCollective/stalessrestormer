@@ -51,6 +51,8 @@ class PerceptualLoss(nn.Module):
         device = pred.device
         mean = self.mean.to(device)
         std = self.std.to(device)
+        pred_norm = pred_norm.to(torch.float32)
+        target_norm = target_norm.to(torch.float32)
         pred_norm = (pred_norm - mean) / std
         target_norm = (target_norm - mean) / std
 

@@ -8,7 +8,7 @@ Implementazione PyTorch di StarNet++ con architettura UNet residua, self-attenti
 - PatchGAN con spectral norm e loss hinge per stabilità
 - Loss percettiva basata su VGG19 pre-addestrata
 - Mixed precision con fallback automatico se l'architettura CUDA non è supportata
-- Gradient clipping, checkpointing per epoch e salvataggio "best" basato sulla L1 di validazione
+- Gradient clipping su generator/discriminatore, monitor NaN automatico e checkpoint "best" basato sulla L1 di validazione
 - Data pipeline per tile `input/` – `target/` (PNG/TIFF/JPEG) con le stesse augmentation di StarNet (rotazioni arbitrarie, resize, flip, channel shuffle, ecc.)
 
 ## Dipendenze
