@@ -54,7 +54,7 @@ class TrainerConfig:
     steps_per_epoch: Optional[int] = None
     gradient_clip: float = 1.0
     mixed_precision: bool = True
-    checkpoint_interval: int = 1
+    checkpoint_interval: int = 10
     validation_interval: int = 1
     preview_interval: int = 1
     log_interval: int = 50

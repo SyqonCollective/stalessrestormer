@@ -381,7 +381,10 @@ def train(config: ExperimentConfig) -> None:
             )
         )
 
-        if epoch % cfg.trainer.checkpoint_interval == 0:
+        if (
+            cfg.trainer.checkpoint_interval
+            and epoch % cfg.trainer.checkpoint_interval == 0
+        ):
             save_checkpoint(
                 cfg.output_dir / f"checkpoint_epoch_{epoch:04d}.pt",
                 epoch,
@@ -407,6 +410,23 @@ def train(config: ExperimentConfig) -> None:
             )
             if "l1" in val_metrics and val_metrics["l1"] < best_val_l1:
                 best_val_l1 = val_metrics["l1"]
+                val_label = f"{best_val_l1:.4f}".replace(".", "-")
+                unique_best = (
+                    cfg.output_dir
+                    / f"checkpoint_best_epoch_{epoch:04d}_l1_{val_label}.pt"
+                )
+                save_checkpoint(
+                    unique_best,
+                    epoch,
+                    global_step,
+                    generator,
+                    discriminator,
+                    optim_g,
+                    optim_d,
+                    scaler_g if use_amp else None,
+                    scaler_d if use_amp else None,
+                    generator_ema,
+                )
                 save_checkpoint(
                     cfg.output_dir / "checkpoint_best.pt",
                     epoch,
@@ -420,10 +440,12 @@ def train(config: ExperimentConfig) -> None:
                     generator_ema,
                 )
                 print(
-                    "[PyStarNet] New best checkpoint (val L1 {:.4f}) saved to {}".format(
-                        best_val_l1,
-                        cfg.output_dir / "checkpoint_best.pt",
-                    )
+                    (
+                        "[PyStarNet] New best checkpoint (val L1 {:.4f}) saved to {}"
+                    ).format(best_val_l1, unique_best)
+                )
+                print(
+                    "[PyStarNet] Updated checkpoint_best.pt to the latest best weights"
                 )
 
         if val_loader and epoch % cfg.trainer.preview_interval == 0:
