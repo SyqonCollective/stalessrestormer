@@ -8,6 +8,10 @@ import torch
 from torch import nn
 
 
+def _has_sdpa() -> bool:
+    return hasattr(torch.nn.functional, "scaled_dot_product_attention")
+
+
 class LayerNorm2d(nn.Module):
     def __init__(self, channels: int, eps: float = 1e-6) -> None:
         super().__init__()
@@ -43,8 +47,7 @@ class MultiDConvHeadAttention(nn.Module):
     def __init__(self, dim: int, num_heads: int = 6, bias: bool = True) -> None:
         super().__init__()
         self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = head_dim**-0.5
+        self.head_dim = dim // num_heads
 
         self.qkv = nn.Conv2d(dim, dim * 3, 1, bias=bias)
         self.dwconv = nn.Conv2d(dim * 3, dim * 3, 3, padding=1, groups=dim * 3, bias=bias)
@@ -56,17 +59,31 @@ class MultiDConvHeadAttention(nn.Module):
         qkv = self.dwconv(qkv)
         q, k, v = qkv.chunk(3, dim=1)
 
-        q = q.reshape(b, self.num_heads, c // self.num_heads, h * w)
-        k = k.reshape(b, self.num_heads, c // self.num_heads, h * w)
-        v = v.reshape(b, self.num_heads, c // self.num_heads, h * w)
+        q = q.reshape(b, self.num_heads, self.head_dim, h * w)
+        k = k.reshape(b, self.num_heads, self.head_dim, h * w)
+        v = v.reshape(b, self.num_heads, self.head_dim, h * w)
 
         q = torch.nn.functional.normalize(q, dim=-1)
         k = torch.nn.functional.normalize(k, dim=-1)
 
-        attn = torch.matmul(q.transpose(-2, -1), k) * self.scale
-        attn = torch.softmax(attn, dim=-1)
-        out = torch.matmul(attn, v.transpose(-2, -1)).transpose(-2, -1)
-        out = out.reshape(b, c, h, w)
+        q = q.transpose(-2, -1)
+        k = k.transpose(-2, -1)
+        v = v.transpose(-2, -1)
+
+        if _has_sdpa():
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                dropout_p=0.0,
+                is_causal=False,
+            )
+        else:  # pragma: no cover - fallback path for older PyTorch
+            attn = torch.matmul(q, k.transpose(-2, -1)) * (self.head_dim ** -0.5)
+            attn = torch.softmax(attn, dim=-1)
+            out = torch.matmul(attn, v)
+
+        out = out.transpose(-2, -1).reshape(b, c, h, w)
         return self.project_out(out)
 
 

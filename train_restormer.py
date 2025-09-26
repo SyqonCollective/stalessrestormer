@@ -142,6 +142,8 @@ def main() -> None:
     if not isinstance(args.output_dir, Path):
         args.output_dir = Path(args.output_dir)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    amp_device_type = "cuda" if device.type == "cuda" else "cpu"
+    amp_enabled = args.mixed_precision and device.type == "cuda"
     ensure_dir(args.output_dir)
 
     train_loader, val_loader = _build_dataloaders(
@@ -162,7 +164,7 @@ def main() -> None:
 
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    scaler = torch.cuda.amp.GradScaler(enabled=args.mixed_precision and device.type == "cuda")
+    scaler = torch.amp.GradScaler(device_type=amp_device_type, enabled=amp_enabled)
 
     best_val = math.inf
     global_step = 0
@@ -174,7 +176,7 @@ def main() -> None:
             inputs = batch["input"].to(device)
             targets = batch["target"].to(device)
             optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=scaler.is_enabled()):
+            with torch.amp.autocast(device_type=amp_device_type, enabled=scaler.is_enabled()):
                 preds = model(inputs)
                 loss = criterion_l1(preds, targets)
                 if perceptual is not None:
