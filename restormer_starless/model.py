@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from contextlib import nullcontext
 from typing import List, Sequence
 
 import torch
@@ -70,21 +72,52 @@ class MultiDConvHeadAttention(nn.Module):
         k = k.transpose(-2, -1)
         v = v.transpose(-2, -1)
 
+        out = None
+
         if _has_sdpa():
-            out = torch.nn.functional.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                dropout_p=0.0,
-                is_causal=False,
+            sdp_context = (
+                torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=False)
+                if q.device.type == "cuda"
+                else nullcontext()
             )
-        else:  # pragma: no cover - fallback path for older PyTorch
-            attn = torch.matmul(q, k.transpose(-2, -1)) * (self.head_dim ** -0.5)
-            attn = torch.softmax(attn, dim=-1)
-            out = torch.matmul(attn, v)
+            try:
+                with sdp_context:
+                    out = torch.nn.functional.scaled_dot_product_attention(
+                        q,
+                        k,
+                        v,
+                        dropout_p=0.0,
+                        is_causal=False,
+                    )
+            except (RuntimeError, torch.OutOfMemoryError):
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                out = None
+
+        if out is None:
+            out = self._chunked_attention(q, k, v)
 
         out = out.transpose(-2, -1).reshape(b, c, h, w)
         return self.project_out(out)
+
+    def _chunked_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        b, heads, tokens, dim = q.shape
+        bytes_per_elem = q.element_size()
+        max_bytes = 512 * 1024 * 1024  # 512MB budget for the attention matrix
+        denom = max(b * heads * tokens * bytes_per_elem, 1)
+        chunk = max(1, min(tokens, max_bytes // denom))
+        chunk = max(chunk, 16)
+
+        out = torch.empty_like(q)
+        scale = dim ** -0.5
+        k_t = k.transpose(-2, -1)
+        for start in range(0, tokens, chunk):
+            end = min(start + chunk, tokens)
+            q_chunk = q[:, :, start:end, :]
+            attn_scores = torch.matmul(q_chunk, k_t) * scale
+            attn_scores = torch.softmax(attn_scores, dim=-1)
+            out[:, :, start:end, :] = torch.matmul(attn_scores, v)
+        return out
 
 
 class TransformerBlock(nn.Module):
