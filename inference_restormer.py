@@ -14,12 +14,38 @@ from PIL import Image
 from restormer_starless import Restormer
 
 
+def _select_state_dict(state: dict) -> dict:
+    if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
+        return state["model"]
+    return state
+
+
+def _infer_base_dim(state_dict: dict) -> int:
+    candidates = [
+        "patch_embed.proj.weight",
+        "module.patch_embed.proj.weight",
+    ]
+    for key in candidates:
+        weight = state_dict.get(key)
+        if weight is not None:
+            return weight.shape[0]
+    for key, weight in state_dict.items():
+        if key.endswith("patch_embed.proj.weight"):
+            return weight.shape[0]
+    return 48
+
+
 def load_model(checkpoint: Path, device: torch.device) -> torch.nn.Module:
-    model = Restormer()
-    state = torch.load(checkpoint, map_location=device)
-    if isinstance(state, dict) and "model" in state:
-        state = state["model"]
-    model.load_state_dict(state)
+    state = torch.load(checkpoint, map_location="cpu")
+    state_dict = _select_state_dict(state)
+    base_dim = _infer_base_dim(state_dict)
+    model = Restormer(dim=base_dim)
+    try:
+        model.load_state_dict(state_dict)
+    except RuntimeError as err:
+        raise RuntimeError(
+            "Impossibile caricare il checkpoint: controlla che la configurazione del modello sia compatibile"
+        ) from err
     model.to(device)
     model.eval()
     return model

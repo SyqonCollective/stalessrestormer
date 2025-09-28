@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 import sys
-from tkinter import END, StringVar, Tk, filedialog, messagebox
+from tkinter import StringVar, Tk, filedialog, messagebox
 from tkinter import ttk
 
 import torch
@@ -42,10 +42,15 @@ class StarlessGUI:
         self.image_var = StringVar()
         self.tile_var = StringVar(value="512")
         self.overlap_var = StringVar(value="128")
+        self.mode_var = StringVar(value="tiles")
         self.status_var = StringVar(value="Pronto")
         self.progress_var = StringVar(value="0%")
 
+        self.tile_entry: ttk.Entry | None = None
+        self.overlap_entry: ttk.Entry | None = None
+
         self._build_ui()
+        self._update_mode()
 
     def _build_ui(self) -> None:
         padding = {"padx": 10, "pady": 5}
@@ -57,34 +62,72 @@ class StarlessGUI:
         checkpoint_entry = ttk.Entry(frame, textvariable=self.checkpoint_var, width=45)
         checkpoint_entry.grid(row=0, column=1, sticky="we", padx=(0, 5))
         ttk.Button(frame, text="Sfoglia", command=self._browse_checkpoint).grid(row=0, column=2)
+        ttk.Button(frame, text="Usa best", command=self._choose_best).grid(row=0, column=3, padx=(5, 0))
 
         ttk.Label(frame, text="Immagine").grid(row=1, column=0, sticky="w")
         image_entry = ttk.Entry(frame, textvariable=self.image_var, width=45)
         image_entry.grid(row=1, column=1, sticky="we", padx=(0, 5))
         ttk.Button(frame, text="Sfoglia", command=self._browse_image).grid(row=1, column=2)
 
-        ttk.Label(frame, text="Dimensione tile").grid(row=2, column=0, sticky="w")
-        tile_entry = ttk.Entry(frame, textvariable=self.tile_var, width=10)
-        tile_entry.grid(row=2, column=1, sticky="w")
+        ttk.Label(frame, text="Modalità").grid(row=2, column=0, sticky="w")
+        ttk.Radiobutton(
+            frame,
+            text="Sliding window",
+            variable=self.mode_var,
+            value="tiles",
+            command=self._update_mode,
+        ).grid(row=2, column=1, sticky="w")
+        ttk.Radiobutton(
+            frame,
+            text="Intera immagine",
+            variable=self.mode_var,
+            value="full",
+            command=self._update_mode,
+        ).grid(row=2, column=2, sticky="w")
 
-        ttk.Label(frame, text="Overlap (px)").grid(row=3, column=0, sticky="w")
-        overlap_entry = ttk.Entry(frame, textvariable=self.overlap_var, width=10)
-        overlap_entry.grid(row=3, column=1, sticky="w")
+        ttk.Label(frame, text="Dimensione tile").grid(row=3, column=0, sticky="w")
+        self.tile_entry = ttk.Entry(frame, textvariable=self.tile_var, width=10)
+        self.tile_entry.grid(row=3, column=1, sticky="w")
+
+        ttk.Label(frame, text="Overlap (px)").grid(row=4, column=0, sticky="w")
+        self.overlap_entry = ttk.Entry(frame, textvariable=self.overlap_var, width=10)
+        self.overlap_entry.grid(row=4, column=1, sticky="w")
 
         self.run_button = ttk.Button(frame, text="Avvia", command=self.run_inference)
-        self.run_button.grid(row=4, column=0, columnspan=3, pady=(10, 0))
+        self.run_button.grid(row=5, column=0, columnspan=4, pady=(10, 0))
 
         self.progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate")
-        self.progress.grid(row=5, column=0, columnspan=3, sticky="we", pady=(10, 0))
+        self.progress.grid(row=6, column=0, columnspan=4, sticky="we", pady=(10, 0))
         self.progress["maximum"] = 100
 
-        ttk.Label(frame, textvariable=self.status_var).grid(row=6, column=0, columnspan=2, sticky="w", pady=(5, 0))
-        ttk.Label(frame, textvariable=self.progress_var, anchor="e").grid(row=6, column=2, sticky="e", pady=(5, 0))
+        ttk.Label(frame, textvariable=self.status_var).grid(row=7, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        ttk.Label(frame, textvariable=self.progress_var, anchor="e").grid(row=7, column=3, sticky="e", pady=(5, 0))
 
         frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(2, weight=0)
+        frame.columnconfigure(3, weight=0)
 
     def _browse_checkpoint(self) -> None:
         path = filedialog.askopenfilename(title="Seleziona checkpoint", filetypes=[("File PyTorch", "*.pt *.pth"), ("Tutti i file", "*.*")])
+        if path:
+            self.checkpoint_var.set(path)
+
+    def _choose_best(self) -> None:
+        current = self.checkpoint_var.get().strip()
+        initial_dir = PROJECT_ROOT
+        if current:
+            maybe = Path(current).expanduser()
+            if maybe.is_dir():
+                initial_dir = maybe
+            elif maybe.parent.exists():
+                initial_dir = maybe.parent
+        if not initial_dir.exists():
+            initial_dir = Path.cwd()
+
+        path = filedialog.askopenfilename(
+            title="Seleziona checkpoint_best",
+            initialdir=str(initial_dir),
+        )
         if path:
             self.checkpoint_var.set(path)
 
@@ -97,19 +140,26 @@ class StarlessGUI:
         checkpoint = Path(self.checkpoint_var.get()).expanduser()
         image_path = Path(self.image_var.get()).expanduser()
 
-        try:
-            tile = int(self.tile_var.get())
-            overlap = int(self.overlap_var.get())
-        except ValueError:
-            messagebox.showerror("Errore", "Tile e overlap devono essere numeri interi.")
-            return
+        mode = self.mode_var.get()
 
-        if tile <= 0:
-            messagebox.showerror("Errore", "La dimensione del tile deve essere positiva.")
-            return
-        if not 0 <= overlap < tile:
-            messagebox.showerror("Errore", "L'overlap deve essere compreso tra 0 e la dimensione del tile - 1.")
-            return
+        tile = None
+        overlap = None
+        stride = None
+        if mode == "tiles":
+            try:
+                tile = int(self.tile_var.get())
+                overlap = int(self.overlap_var.get())
+            except ValueError:
+                messagebox.showerror("Errore", "Tile e overlap devono essere numeri interi.")
+                return
+
+            if tile <= 0:
+                messagebox.showerror("Errore", "La dimensione del tile deve essere positiva.")
+                return
+            if not 0 <= overlap < tile:
+                messagebox.showerror("Errore", "L'overlap deve essere compreso tra 0 e la dimensione del tile - 1.")
+                return
+            stride = tile - overlap
 
         if not checkpoint.exists():
             messagebox.showerror("Errore", f"Checkpoint non trovato: {checkpoint}")
@@ -117,8 +167,6 @@ class StarlessGUI:
         if not image_path.exists():
             messagebox.showerror("Errore", f"Immagine non trovata: {image_path}")
             return
-
-        stride = tile - overlap
         output_path = image_path.with_name(f"{image_path.stem}_starless{image_path.suffix}")
 
         self.run_button.config(state="disabled")
@@ -133,11 +181,17 @@ class StarlessGUI:
                 model = load_model(checkpoint, device)
                 image = prepare_image(image_path)
 
-                def _update_progress(value: float) -> None:
-                    percent = int(value * 100)
-                    self.root.after(0, self._set_progress, percent)
+                if mode == "tiles":
+                    def _update_progress(value: float) -> None:
+                        percent = int(value * 100)
+                        self.root.after(0, self._set_progress, percent)
 
-                output = sliding_window(model, image, tile, stride, device, _update_progress)
+                    output = sliding_window(model, image, tile, stride, device, _update_progress)
+                else:
+                    self.root.after(0, self._set_progress, 50)
+                    with torch.no_grad():
+                        output = model(image.to(device)).detach().cpu()
+                    self.root.after(0, self._set_progress, 100)
                 save_image(output, output_path)
                 self.root.after(0, self._on_success, output_path)
             except Exception as exc:  # pylint: disable=broad-except
@@ -148,6 +202,13 @@ class StarlessGUI:
     def _set_progress(self, percent: int) -> None:
         self.progress["value"] = percent
         self.progress_var.set(f"{percent}%")
+
+    def _update_mode(self) -> None:
+        state = "normal" if self.mode_var.get() == "tiles" else "disabled"
+        if self.tile_entry is not None:
+            self.tile_entry.config(state=state)
+        if self.overlap_entry is not None:
+            self.overlap_entry.config(state=state)
 
     def _on_success(self, output: Path) -> None:
         self.run_button.config(state="normal")
