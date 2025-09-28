@@ -169,12 +169,12 @@ class StarlessGUI:
             return
         output_path = image_path.with_name(f"{image_path.stem}_starless{image_path.suffix}")
 
+        device = _default_device()
+        mode_label = "Sliding window" if mode == "tiles" else "Intera immagine"
         self.run_button.config(state="disabled")
-        self.status_var.set("Elaborazione in corso...")
+        self.status_var.set(f"Elaborazione in corso ({mode_label}, device={device})")
         self.progress_var.set("0%")
         self.progress["value"] = 0
-
-        device = _default_device()
 
         def task() -> None:
             try:
